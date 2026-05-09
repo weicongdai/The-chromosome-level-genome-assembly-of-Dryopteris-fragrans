@@ -1,0 +1,85 @@
+### solo vs intact LTR 比例
+
+intact LTR:完整LTR,有双端LTR和中间区域
+solo LTR:只有一端LTR及部分中间区域,可以从EDTA中间文件.EDTA.RM.gff3提取
+
+1. 获取序列长度的fai文件
+
+```{bash eval=F}
+samtools faidx genome.fa.mod.EDTA.TElib.fa
+```
+
+2. 提取比对到LTR|INT的注释
+
+```{r eval=F}
+library(rtracklayer)
+LTR_RM <- import(
+  "genome.fa.mod.EDTA.RM.gff3") %>%
+  as_tibble() %>%
+  filter(str_detect(Name, "INT|LTR")) # 提取出Name含有INT或LTR的行
+```
+
+3. 根据fai提取序列长度
+
+```{r eval=F}
+library(readr)
+LTRlib_size <- read_table("genome.fa.mod.EDTA.TElib.fa.fai",
+                          col_names = FALSE) %>%
+  filter(str_detect(X1,"LTR|INT")) %>%
+  separate(X1, sep = "#", into = c("Name", "Classification")) %>%
+  select(Name,size = X2)
+```
+
+4. 分别提取LTR和INT的位置信息
+
+```{r eval=F}
+# 过滤比对结果:score为RM.gff3中的比对质量值
+LTRRT_homo <- inner_join(LTR_RM,LTRlib_size,by = "Name") %>%
+  # filter(score > 300, width/size > 0.8) %>%  可过滤score大于300,覆盖度大于80%
+  mutate(region = str_sub(Name, 13, 15)) %>% # 提取Name列中第13到15的字符
+    select(seqnames, start, end, ID, Name, region)
+
+# LTR 比对结果提取
+LTR_homo <- filter(LTRRT_homo, region == "LTR") %>%
+  mutate(row_number = row_number())
+
+# INT 比对结果提取
+INT_homo =  filter(LTRRT_homo, region == "INT") %>%
+  mutate(row_number = row_number())
+
+# 提取INT 最近的LTR
+library(hiAnnotator) # 手动安装BSgenome和hiAnnotator
+INT_Nearest_LTR <- get2NearestFeature(
+  sites.rd = as(INT_homo, "GRanges"),
+  features.rd = as(LTR_homo, "GRanges"), 
+  "NearestLTR", 
+  side = "either") %>%
+  as_tibble()
+```
+
+5. 分别提取intactLTR 和soloLTR
+
+```{r}
+# intact LTRRT
+## 两端 5000bp 内各有一个LTR
+ltr_int_dist = 5000
+intactLTR_RM =
+  filter(INT_Nearest_LTR, 
+         Either.NearestLTR.upStream1.Dist >= -1*ltr_int_dist & 
+            Either.NearestLTR.downStream1.Dist <= ltr_int_dist &
+           Either.NearestLTR.upStream1 == Either.NearestLTR.downStream1
+           )
+
+# solo LTR
+soloLTR_RM =
+  filter(INT_Nearest_LTR, 
+         (Either.NearestLTR.upStream1.Dist >= -1*ltr_int_dist |
+            Either.NearestLTR.downStream1.Dist <= ltr_int_dist) &
+           !(ID %in% intactLTR_RM$ID)
+           )
+
+write.table(soloLTR_RM,file = "soloLTR_RM.tsv")
+write.table(intactLTR_RM,file = "intactLTR_RM.tsv")
+```
+
+# solo-LTR的数量可参考soloLTR_RM,完整的LTR不要参考intactLTR_RM
